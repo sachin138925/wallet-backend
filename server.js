@@ -68,6 +68,7 @@ app.post("/api/wallet", async (req, res) => {
         await new Wallet({ name, address, privateKey, mnemonic, passwordHash }).save();
         res.status(201).json({ message: "Wallet saved!" });
     } catch (err) {
+        // This part already handles the duplicate name error
         if (err.code === 11000) return res.status(409).json({ error: "Wallet name already exists" });
         console.error(err);
         res.status(500).json({ error: "Server error during wallet creation" });

@@ -21,15 +21,21 @@ mongoose.connect(
 );
 
 /* ---------- SCHEMAS ---------- */
+// This defines the structure for storing wallets in the database.
 const walletSchema = new mongoose.Schema({
-  name: { type: String, unique: true, required: true },
+  name: { 
+    type: String, 
+    unique: true, 
+    required: true,
+    lowercase: true // THE FIX IS HERE: This automatically converts names to lowercase before saving.
+  },
   address: { type: String, required: true },
   privateKey: { type: String, required: true },
-  // Mnemonic is crucial for recovery
   mnemonic: { type: String, required: true },
   passwordHash: { type: String, required: true },
 });
 
+// This defines the structure for storing transaction history.
 const txSchema = new mongoose.Schema({
   hash: { type: String, unique: true, required: true },
   from: String,
@@ -41,6 +47,7 @@ const txSchema = new mongoose.Schema({
   timestamp: Date,
 });
 
+// This defines the structure for storing user contacts.
 const contactSchema = new mongoose.Schema({
   walletAddress: { type: String, required: true, index: true },
   contactName: { type: String, required: true },
@@ -60,40 +67,50 @@ const erc20Interface = new Interface(ERC20_ABI);
 
 /* ---------- API ENDPOINTS ---------- */
 
-// Wallets
+// Endpoint to CREATE a new wallet (or import one).
 app.post("/api/wallet", async (req, res) => {
     try {
         const { name, address, privateKey, mnemonic, password } = req.body;
-        if (!name?.trim() || !password?.trim()) return res.status(400).json({ error: "Name & password required" });
+        if (!name?.trim() || !password?.trim()) {
+            return res.status(400).json({ error: "Name & password required" });
+        }
         const passwordHash = await bcrypt.hash(password, 12);
         await new Wallet({ name, address, privateKey, mnemonic, passwordHash }).save();
         res.status(201).json({ message: "Wallet saved!" });
     } catch (err) {
-        if (err.code === 11000) return res.status(409).json({ error: "Wallet name already exists" });
+        if (err.code === 11000) {
+            return res.status(409).json({ error: "Wallet name already exists" });
+        }
         console.error(err);
         res.status(500).json({ error: "Server error during wallet creation" });
     }
 });
 
+// Endpoint to ACCESS an existing wallet (Login).
 app.post("/api/wallet/:name", async (req, res) => {
     try {
+        // Because of `lowercase: true` in the schema, this search is now case-insensitive.
         const { name } = req.params;
         const { password } = req.body;
-        const wallet = await Wallet.findOne({ name });
-        if (!wallet) return res.status(404).json({ error: "Wallet not found" });
+        const wallet = await Wallet.findOne({ name: name.toLowerCase() });
+
+        if (!wallet) {
+            return res.status(404).json({ error: "Wallet not found" });
+        }
         const isPasswordCorrect = await bcrypt.compare(password, wallet.passwordHash);
-        if (!isPasswordCorrect) return res.status(401).json({ error: "Invalid password" });
+        if (!isPasswordCorrect) {
+            return res.status(401).json({ error: "Invalid password" });
+        }
+        // Send back wallet data, but also include the plain-text password for the frontend's "Reveal Secrets" feature.
         const { passwordHash, ...walletData } = wallet.toObject();
-        res.json(walletData);
+        res.json({ ...walletData, password }); // Add password to the response
     } catch (err) {
         console.error(err);
         res.status(500).json({ error: "Server error while fetching wallet" });
     }
 });
 
-// ==================================================================
-// ========= NEW ENDPOINT FOR PASSWORD RESET ========================
-// ==================================================================
+// Endpoint to RESET a user's password using their mnemonic.
 app.put("/api/wallet/reset-password", async (req, res) => {
     try {
         const { name, mnemonic, newPassword } = req.body;
@@ -101,19 +118,16 @@ app.put("/api/wallet/reset-password", async (req, res) => {
         if (!name || !mnemonic || !newPassword) {
             return res.status(400).json({ error: "Wallet name, mnemonic, and new password are required." });
         }
-
-        // 1. Find the wallet by its name
-        const wallet = await Wallet.findOne({ name });
+        
+        const wallet = await Wallet.findOne({ name: name.toLowerCase() });
         if (!wallet) {
             return res.status(404).json({ error: "Wallet not found." });
         }
 
-        // 2. IMPORTANT: Verify the provided mnemonic phrase matches the one in the database
         if (wallet.mnemonic !== mnemonic.trim()) {
             return res.status(401).json({ error: "The provided Mnemonic Phrase is incorrect." });
         }
 
-        // 3. Hash the new password and update the wallet document
         const newPasswordHash = await bcrypt.hash(newPassword, 12);
         wallet.passwordHash = newPasswordHash;
         await wallet.save();
